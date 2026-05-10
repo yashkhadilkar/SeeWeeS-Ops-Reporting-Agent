@@ -188,17 +188,32 @@ def _reconcile_row(row: pd.Series) -> Dict[str, Any]:
     candidates = find_by_item_id(item_id_raw)
 
     if len(candidates) == 1:
-        # Exactly one canonical row for this item_id -> EXACT_MATCH
+        # Exactly one canonical row for this item_id. Usually an EXACT_MATCH,
+        # but if the same item_id also has a SPECIAL_CASE entry in the legacy
+        # map (e.g. 99999 = clinical trial placeholder), surface that instead
+        # so the report flags it for the operational care it requires.
         canon = candidates[0]
-        result.update({
-            "canonical_item_id": canon["canonical_item_id"],
-            "canonical_item_name": canon["canonical_item_name"],
-            "temp_control": canon["temp_control"],
-            "product_class": canon["product_class"],
-            "reason_code": "exact_match",
-            "reason_detail": f"item_id={item_id_raw} resolved to {canon['canonical_item_id']}",
-            "is_excluded": False,
-        })
+        legacy = find_by_legacy_id(item_id_raw)
+        if legacy is not None and legacy["rule"] == "SPECIAL_CASE":
+            result.update({
+                "canonical_item_id": canon["canonical_item_id"],
+                "canonical_item_name": canon["canonical_item_name"],
+                "temp_control": canon["temp_control"],
+                "product_class": canon["product_class"],
+                "reason_code": "special_case",
+                "reason_detail": legacy["rationale"],
+                "is_excluded": False,
+            })
+        else:
+            result.update({
+                "canonical_item_id": canon["canonical_item_id"],
+                "canonical_item_name": canon["canonical_item_name"],
+                "temp_control": canon["temp_control"],
+                "product_class": canon["product_class"],
+                "reason_code": "exact_match",
+                "reason_detail": f"item_id={item_id_raw} resolved to {canon['canonical_item_id']}",
+                "is_excluded": False,
+            })
 
     elif len(candidates) > 1:
         # D6: item_id ambiguous (e.g. 10021 -> RMD-100 or RMD-200).
@@ -226,36 +241,38 @@ def _reconcile_row(row: pd.Series) -> Dict[str, Any]:
             })
 
     else:
-        # No canonical row for this item_id. Try alias / legacy / pure name.
-        # D4: alias / canonical name lookup
-        name_match = find_by_name(item_name_raw)
-        if name_match:
-            canon = lookup_canonical(name_match)
-            from tools.item_master import _CANONICAL_BY_NAME, _norm
-            # Distinguish A.1 canonical-name match (exact) from A.2 alias match.
-            is_exact_name = _norm(item_name_raw) in _CANONICAL_BY_NAME
+        # No canonical row for this item_id. Try legacy first (D5), then name (D4).
+        # We check legacy BEFORE name because a legacy/deprecated item_id is a
+        # stronger signal of what the system intended than a name match, and
+        # per playbook D8 we need to report the row as fixed via legacy mapping.
+        legacy = find_by_legacy_id(item_id_raw)
+        if legacy is not None:
+            canon = lookup_canonical(legacy["canonical_item_id"])
+            code = "special_case" if legacy["rule"] == "SPECIAL_CASE" else "legacy_id_map"
             result.update({
                 "canonical_item_id": canon["canonical_item_id"],
                 "canonical_item_name": canon["canonical_item_name"],
                 "temp_control": canon["temp_control"],
                 "product_class": canon["product_class"],
-                "reason_code": "exact_match" if is_exact_name else "alias_match",
-                "reason_detail": f"resolved via name '{item_name_raw}'",
+                "reason_code": code,
+                "reason_detail": legacy["rationale"],
                 "is_excluded": False,
             })
         else:
-            # D5: legacy / deprecated / special-case id
-            legacy = find_by_legacy_id(item_id_raw)
-            if legacy is not None:
-                canon = lookup_canonical(legacy["canonical_item_id"])
-                code = "special_case" if legacy["rule"] == "SPECIAL_CASE" else "legacy_id_map"
+            # D4: alias / canonical name lookup
+            name_match = find_by_name(item_name_raw)
+            if name_match:
+                canon = lookup_canonical(name_match)
+                from tools.item_master import _CANONICAL_BY_NAME, _norm
+                # Distinguish A.1 canonical-name match (exact) from A.2 alias match.
+                is_exact_name = _norm(item_name_raw) in _CANONICAL_BY_NAME
                 result.update({
                     "canonical_item_id": canon["canonical_item_id"],
                     "canonical_item_name": canon["canonical_item_name"],
                     "temp_control": canon["temp_control"],
                     "product_class": canon["product_class"],
-                    "reason_code": code,
-                    "reason_detail": legacy["rationale"],
+                    "reason_code": "exact_match" if is_exact_name else "alias_match",
+                    "reason_detail": f"resolved via name '{item_name_raw}'",
                     "is_excluded": False,
                 })
             # else: stays as excluded_unresolved with default values
