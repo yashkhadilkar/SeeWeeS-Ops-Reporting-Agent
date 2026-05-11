@@ -27,7 +27,11 @@ class AppState(TypedDict, total=False):
     anomalies_md: str
     ops_insights: str
 
-    # In corridor mode we store a route-level dict in weather_risk; in fallback mode it's single-location risk dict.
+    # New for Option 3 (Deep-Dive Trend Analysis)
+    reconciliation_summary: Dict[str, Any]
+    period_kpis: Dict[str, Any]
+
+    weather_forecast: Dict[str, Any]
     weather_risk: Dict[str, Any]
 
     dispatch_plan: str
@@ -52,15 +56,30 @@ def node_csv_analysis(state: AppState) -> AppState:
 
     anomalies_md = "(none detected or insufficient numeric data)"
     if not res.anomalies.empty:
-        anomalies_md = res.anomalies.head(12).to_markdown(index=False)
+        # Show a compact view of the anomalies with the canonical columns we added.
+        cols_priority = [
+            "shipment_date", "corridor_id", "item_id", "item_name",
+            "canonical_item_id", "reason_code", "is_dispatchable",
+            "anomaly_score",
+        ]
+        cols_present = [c for c in cols_priority if c in res.anomalies.columns]
+        anomalies_md = res.anomalies[cols_present].head(12).to_markdown(index=False)
 
-    ops_insights = run_ops_agent(summary=res.summary, kpis=res.kpis, anomalies_md=anomalies_md)
+    ops_insights = run_ops_agent(
+        summary=res.summary,
+        kpis=res.kpis,
+        anomalies_md=anomalies_md,
+        reconciliation_summary=res.reconciliation_summary,
+        period_kpis=res.period_kpis,
+    )
 
     return {
         "csv_summary": res.summary,
         "csv_kpis": res.kpis,
         "anomalies_md": anomalies_md,
         "ops_insights": ops_insights,
+        "reconciliation_summary": res.reconciliation_summary,
+        "period_kpis": res.period_kpis,
     }
 
 
@@ -174,6 +193,8 @@ def node_planner(state: AppState) -> AppState:
         business_context=state.get("business_context", ""),
         ops_insights=state.get("ops_insights", ""),
         weather_risk=state.get("weather_risk", {}),
+        reconciliation_summary=state.get("reconciliation_summary", {}),
+        period_kpis=state.get("period_kpis", {}),
     )
     return {"dispatch_plan": plan}
 
@@ -185,9 +206,10 @@ def node_report(state: AppState) -> AppState:
         anomaly_highlights=state.get("anomalies_md", "(none)"),
         weather_risk=state.get("weather_risk", {}),
         dispatch_plan=state.get("dispatch_plan", ""),
+        reconciliation_summary=state.get("reconciliation_summary", {}),
+        period_kpis=state.get("period_kpis", {}),
     )
     return {"report_html": html}
-
 
 def node_email(state: AppState) -> AppState:
     to_email = os.getenv("REPORT_EMAIL_TO", "").strip()

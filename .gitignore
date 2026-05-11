@@ -16,4 +16,5 @@ chroma_db/
 
 # logs
 *.log
-.env
+
+output_report.html
